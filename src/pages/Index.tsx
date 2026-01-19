@@ -321,7 +321,8 @@ const Index = () => {
 
     try {
       // Assuming the worker runs on port 8787
-      const response = await fetch('http://localhost:8787/api/send', {
+      // Production Worker URL
+      const response = await fetch('https://mail-backend.ramgoutam17.workers.dev/api/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
