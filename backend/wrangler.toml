@@ -1,0 +1,6 @@
+name = "mail-backend"
+main = "src/worker.ts"
+compatibility_date = "2023-12-01"
+
+[vars]
+# RESEND_API_KEY will be set via secret or environment variable

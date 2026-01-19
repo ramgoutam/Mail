@@ -1,4 +1,5 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import { supabase } from '../lib/supabase';
 import {
   LogOut,
   ChevronRight,
@@ -37,53 +38,7 @@ import {
   Type
 } from 'lucide-react';
 
-// Mock Data
-const MOCK_EMAILS = [
-  {
-    id: 1,
-    sender: "Alice Williams",
-    avatar: "AW",
-    subject: "Project Update: Q1 Goals",
-    preview: "Hi team, just wanted to share the latest progress on our Q1 goals. We are...",
-    time: "10:30 AM",
-    folder: "inbox",
-    read: false,
-    body: "Hi team,\n\nJust wanted to share the latest progress on our Q1 goals. We are currently ahead of schedule on the design phase, but slightly behind on the backend integration.\n\nLet's sync up tomorrow at 10 AM to discuss mitigations.\n\nBest,\nAlice"
-  },
-  {
-    id: 2,
-    sender: "Design Daily",
-    avatar: "DD",
-    subject: "Top 10 Glassmorphism Trends",
-    preview: "Discover the latest trends in UI design. Glassmorphism is making a huge com...",
-    time: "Yesterday",
-    folder: "inbox",
-    read: true,
-    body: "Hey Designer,\n\nGlassmorphism is back and better than ever. In this week's newsletter, we dive deep into how blur effects and semi-transparent layers can elevate your UI.\n\nRead the full article on our blog.\n\nCheers,\nThe Design Daily Team"
-  },
-  {
-    id: 3,
-    sender: "Bob Smith",
-    avatar: "BS",
-    subject: "Ref: Lunch Meeting",
-    preview: "Sounds good! See you at the new Italian place downtown.",
-    time: "Yesterday",
-    folder: "sent",
-    read: true,
-    body: "Sounds good! See you at the new Italian place downtown.\n\n- Bob"
-  },
-  {
-    id: 4,
-    sender: "Draft: Q2 Planning",
-    avatar: "Me",
-    subject: "(No Subject)",
-    preview: "Agenda points: 1. Budget review 2. Hiring plan...",
-    time: "2 days ago",
-    folder: "drafts",
-    read: true,
-    body: "Agenda points:\n1. Budget review\n2. Hiring plan\n3. Marketing strategy"
-  }
-];
+
 
 const Index = () => {
   const [expanded, setExpanded] = useState(false);
@@ -98,6 +53,134 @@ const Index = () => {
   const [isEditorFocused, setIsEditorFocused] = useState(false);
   const [showFontMenu, setShowFontMenu] = useState(false);
   const [selectedFont, setSelectedFont] = useState('Normal');
+
+  interface Email {
+    id: number;
+    sender: string;
+    avatar: string;
+    subject: string;
+    preview: string;
+    time: string;
+    folder: string;
+    read: boolean;
+    body: string;
+  }
+
+  const [emails, setEmails] = useState<Email[]>([]);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [user, setUser] = useState<any>(null);
+  const [userRole, setUserRole] = useState<string>('user');
+  const [isSignUp, setIsSignUp] = useState(false);
+
+  useEffect(() => {
+    // Check active session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      if (session?.user) {
+        setIsLoggedIn(true);
+        fetchUserProfile(session.user.id);
+        setSenderEmail(session.user.email || '');
+      }
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      setIsLoggedIn(!!session);
+      if (session?.user) {
+        fetchUserProfile(session.user.id);
+        setSenderEmail(session.user.email || '');
+      } else {
+        setUserRole('user');
+        setEmails([]);
+        setSenderEmail('');
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const fetchUserProfile = async (userId: string) => {
+    const { data } = await supabase.from('profiles').select('role').eq('id', userId).single();
+    if (data) {
+      setUserRole(data.role);
+      if (data.role === 'admin') {
+        setDisplayName('Admin');
+      }
+    }
+    fetchEmails(); // Re-fetch emails for the user (rls will handle filtering if applied)
+  };
+
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      if (isSignUp) {
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+        });
+        if (error) throw error;
+        alert('Signup successful! Check your email for confirmation (if enabled) or login.');
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+        if (error) throw error;
+      }
+    } catch (error: any) {
+      alert(error.message);
+    }
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setShowLogoutConfirm(false);
+  };
+
+
+  const formatTime = (dateStr: string) => {
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diffDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
+
+    if (diffDays === 0) return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays < 7) return `${diffDays} days ago`;
+    return date.toLocaleDateString();
+  };
+
+  const fetchEmails = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('emails')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      if (data) {
+        const mappedEmails: Email[] = data.map((e: any) => ({
+          id: e.id,
+          sender: e.folder === 'sent' ? (e.recipient_email || 'Recipient') : (e.sender_name || 'Unknown'),
+          avatar: (e.sender_name || 'U').split(' ').map((n: any) => n[0]).join('').substring(0, 2).toUpperCase(),
+          subject: e.subject || '(No Subject)',
+          preview: (e.body || '').substring(0, 80) + '...',
+          time: formatTime(e.created_at),
+          folder: e.folder || 'inbox',
+          read: e.is_read || false,
+          body: e.body || ''
+        }));
+        setEmails(mappedEmails);
+      }
+    } catch (error) {
+      console.error('Error fetching emails:', error);
+    }
+  };
+
+  useEffect(() => {
+    fetchEmails();
+  }, []);
   const [activeFormats, setActiveFormats] = useState({
     bold: false,
     italic: false,
@@ -116,6 +199,9 @@ const Index = () => {
   const [recipientInput, setRecipientInput] = useState('');
   const [showDomainSuggestions, setShowDomainSuggestions] = useState(false);
   const [matchingDomains, setMatchingDomains] = useState<string[]>([]);
+  const [subject, setSubject] = useState('');
+  const [displayName, setDisplayName] = useState('Glass Mail');
+  const [senderEmail, setSenderEmail] = useState('');
   const editorRef = useRef<HTMLDivElement>(null);
 
   const COMMON_DOMAINS = [
@@ -219,13 +305,102 @@ const Index = () => {
     setRecipients(recipients.filter(email => email !== emailToRemove));
   };
 
+  const handleSendMessage = async () => {
+    if (recipients.length === 0) {
+      alert('Please add at least one recipient');
+      return;
+    }
+    if (!subject.trim()) {
+      alert('Please add a subject');
+      return;
+    }
+    if (!editorContent.trim()) {
+      alert('Please add a message body');
+      return;
+    }
+
+    try {
+      // Assuming the worker runs on port 8787
+      const response = await fetch('http://localhost:8787/api/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: recipients.join(', '),
+          subject,
+          html: editorRef.current?.innerHTML || editorContent,
+          fromName: displayName,
+          fromEmail: senderEmail
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        alert('Message sent successfully!');
+
+        // Insert into Supabase
+        const { error: dbError } = await supabase.from('emails').insert({
+          sender_name: displayName,
+          sender_email: senderEmail,
+          recipient_email: recipients.join(', '),
+          subject: subject,
+          body: editorRef.current?.innerHTML || editorContent,
+          folder: 'sent',
+          is_read: true,
+          user_id: user?.id
+        });
+
+        // ---------------------------------------------------------
+        // SIMULATION: Loopback for Self-Sending (To see in Inbox)
+        // If you send an email to yourself, it should appear in Inbox.
+        // ---------------------------------------------------------
+        const isSelfSend = recipients.some(r =>
+          r.toLowerCase() === senderEmail.toLowerCase() ||
+          r.toLowerCase() === user?.email?.toLowerCase()
+        );
+
+        if (isSelfSend) {
+          await supabase.from('emails').insert({
+            sender_name: displayName,
+            sender_email: senderEmail,
+            recipient_email: recipients.join(', '),
+            subject: subject,
+            body: editorRef.current?.innerHTML || editorContent,
+            folder: 'inbox', // <--- goes to Inbox
+            is_read: false,
+            user_id: user?.id
+          });
+        }
+        // ---------------------------------------------------------
+
+        if (dbError) {
+          console.error('Error saving to DB:', dbError);
+        } else {
+          fetchEmails();
+        }
+
+        setIsComposeOpen(false);
+        // Reset form
+        setRecipients([]);
+        setSubject('');
+        setEditorContent('');
+        if (editorRef.current) editorRef.current.innerHTML = '';
+      } else {
+        throw new Error((data as any).error?.message || (data as any).error || 'Failed to send message');
+      }
+    } catch (error) {
+      console.error('Error sending message:', error);
+      alert('Failed to send message: ' + (error as Error).message);
+    }
+  };
+
   const activeButton = (isActive: boolean) =>
     `p-2 rounded transition-colors ${isActive
       ? (darkMode ? 'bg-white text-black' : 'bg-black text-white')
       : `hover:bg-white/10 ${textSecondary} hover:${textPrimary}`}`;
 
-  const filteredEmails = MOCK_EMAILS.filter(email => email.folder === currentFolder);
-  const selectedEmail = MOCK_EMAILS.find(email => email.id === selectedEmailId);
+  const filteredEmails = emails.filter(email => email.folder === currentFolder);
+  const selectedEmail = emails.find(email => email.id === selectedEmailId);
 
   // Common Styles
   const glassPanel = `
@@ -252,48 +427,61 @@ const Index = () => {
       <div className={`absolute top-[40%] left-[50%] -translate-x-1/2 -translate-y-1/2 w-[50vw] h-[50vw] max-w-[800px] max-h-[800px] rounded-full blur-[120px] mix-blend-screen ${darkMode ? 'bg-blue-600/10' : 'bg-blue-400/20'}`} />
 
       {/* Login View */}
+      {/* Login / Signup View */}
       {!isLoggedIn && (
         <div className="absolute inset-0 z-50 flex items-center justify-center p-4">
-          <div className={`w-full max-w-md p-8 rounded-[2rem] flex flex-col items-center gap-6 ${glassPanel} border-white/20 animate-in fade-in zoom-in-95 duration-500`}>
+          <div className={`w-full max-w-md p-8 rounded-[2rem] flex flex-col items-center gap-6 ${glassPanel} border-white/20 shadow-2xl animate-in fade-in zoom-in-95 duration-500`}>
 
             <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-indigo-500 to-rose-500 flex items-center justify-center shadow-lg mb-2">
-              <LogIn size={40} className="text-white ml-2" />
+              {isSignUp ? <User size={40} className="text-white ml-2" /> : <LogIn size={40} className="text-white ml-2" />}
             </div>
 
             <div className="text-center">
-              <h1 className={`text-3xl font-bold mb-2 ${textPrimary}`}>Welcome Back</h1>
-              <p className={textSecondary}>Please enter your details to sign in.</p>
+              <h1 className={`text-3xl font-bold mb-2 ${textPrimary}`}>{isSignUp ? 'Create Account' : 'Welcome Back'}</h1>
+              <p className={textSecondary}>{isSignUp ? 'Sign up to get started' : 'Please enter your details to sign in.'}</p>
             </div>
 
-            <div className="w-full flex flex-col gap-4">
+            <form onSubmit={handleAuth} className="w-full flex flex-col gap-4">
               <div className={`flex items-center gap-3 h-14 px-4 rounded-xl ${darkMode ? 'bg-white/5' : 'bg-black/5'} border border-transparent focus-within:border-white/20 transition-all`}>
                 <User size={20} className={textSecondary} />
                 <input
                   type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
                   placeholder="Email Address"
                   className={`flex-1 bg-transparent border-none outline-none ${textPrimary} placeholder:${textSecondary}`}
+                  required
                 />
               </div>
               <div className={`flex items-center gap-3 h-14 px-4 rounded-xl ${darkMode ? 'bg-white/5' : 'bg-black/5'} border border-transparent focus-within:border-white/20 transition-all`}>
                 <Lock size={20} className={textSecondary} />
                 <input
                   type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
                   placeholder="Password"
                   className={`flex-1 bg-transparent border-none outline-none ${textPrimary} placeholder:${textSecondary}`}
+                  required
                 />
               </div>
-            </div>
 
-            <button
-              onClick={() => setIsLoggedIn(true)}
-              className="w-full h-14 rounded-xl bg-gradient-to-r from-indigo-500 to-rose-500 text-white font-bold text-lg shadow-lg hover:opacity-90 transition-opacity mt-2"
-            >
-              Sign In
-            </button>
+              <button
+                type="submit"
+                className="w-full h-14 rounded-xl bg-gradient-to-r from-indigo-500 to-rose-500 text-white font-bold text-lg shadow-lg hover:opacity-90 transition-opacity mt-2 flex items-center justify-center gap-2"
+              >
+                {isSignUp ? 'Sign Up' : 'Sign In'}
+              </button>
+            </form>
 
             <div className="text-center mt-2">
-              <span className={`text-sm ${textSecondary}`}>Don't have an account? </span>
-              <span className={`text-sm font-bold cursor-pointer hover:underline ${textPrimary}`}>Sign Up</span>
+              <span className={`text-sm ${textSecondary}`}>{isSignUp ? 'Already have an account? ' : "Don't have an account? "}</span>
+              <button
+                type="button"
+                onClick={() => setIsSignUp(!isSignUp)}
+                className={`text-sm font-bold cursor-pointer hover:underline ${textPrimary}`}
+              >
+                {isSignUp ? 'Sign In' : 'Sign Up'}
+              </button>
             </div>
 
           </div>
@@ -322,10 +510,7 @@ const Index = () => {
                     Cancel
                   </button>
                   <button
-                    onClick={() => {
-                      setIsLoggedIn(false);
-                      setShowLogoutConfirm(false);
-                    }}
+                    onClick={handleLogout}
                     className="flex-1 h-12 rounded-xl bg-red-500 text-white font-medium shadow-lg hover:bg-red-600 transition-colors"
                   >
                     Logout
@@ -396,7 +581,13 @@ const Index = () => {
                   </div>
                   <div className={`flex items-center gap-3 border-b ${darkMode ? 'border-white/10' : 'border-black/5'} pb-2`}>
                     <span className={`w-12 text-sm font-medium ${textSecondary}`}>Subject:</span>
-                    <input type="text" className={`flex-1 bg-transparent border-none outline-none font-medium ${textPrimary}`} placeholder="Subject" />
+                    <input
+                      type="text"
+                      value={subject}
+                      onChange={(e) => setSubject(e.target.value)}
+                      className={`flex-1 bg-transparent border-none outline-none font-medium ${textPrimary}`}
+                      placeholder="Subject"
+                    />
                   </div>
                   <div className="relative flex-1 min-h-[200px]">
                     <div
@@ -533,7 +724,7 @@ const Index = () => {
                     <div className="flex items-center gap-4">
                       <button className={`p-2 rounded-full hover:bg-red-500/10 ${textSecondary} hover:text-red-500 transition-colors`}><Trash2 size={20} /></button>
                       <button
-                        onClick={() => setIsComposeOpen(false)}
+                        onClick={handleSendMessage}
                         className="px-8 py-3 rounded-xl bg-gradient-to-r from-indigo-500 to-rose-500 text-white font-bold shadow-lg hover:opacity-90 hover:scale-[1.02] transition-all flex items-center gap-2"
                       >
                         <Send size={18} />
@@ -546,6 +737,8 @@ const Index = () => {
               </div>
             </div>
           )}
+
+
 
           {/* Sidebar */}
           <div className={`h-full flex flex-col gap-4 z-10 transition-all duration-500 ease-in-out ${expanded ? 'w-64' : 'w-16'}`}>
@@ -560,12 +753,12 @@ const Index = () => {
             >
               <div className="w-16 h-full flex items-center justify-center shrink-0">
                 <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-indigo-500/50 to-rose-500/50 flex items-center justify-center">
-                  <span className="text-white text-xs font-medium">JD</span>
+                  <span className="text-white text-xs font-medium">{user?.email?.substring(0, 2).toUpperCase() || 'JD'}</span>
                 </div>
               </div>
               <div className={`flex flex-col justify-center overflow-hidden whitespace-nowrap transition-all duration-500 ${expanded ? 'opacity-100 max-w-[200px]' : 'opacity-0 max-w-0'}`}>
-                <span className={`font-medium pl-2 ${textPrimary}`}>John Doe</span>
-                <span className={`text-xs pl-2 ${textSecondary}`}>Admin User</span>
+                <span className={`font-medium pl-2 ${textPrimary}`}>{displayName}</span>
+                <span className={`text-xs pl-2 ${textSecondary}`}>{userRole === 'admin' ? 'Admin User' : 'Standard User'}</span>
               </div>
             </div>
 
@@ -742,21 +935,33 @@ const Index = () => {
                 <div className="max-w-3xl mx-auto pt-8 animate-in fade-in zoom-in-95 duration-500">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     {/* Account Section */}
+                    {/* Profile Settings (was Account) */}
                     <div className={`p-6 rounded-3xl flex flex-col gap-4 ${glassPanel} !bg-white/5`}>
                       <h3 className={`text-xl font-bold ${textPrimary} flex items-center gap-2`}>
-                        <div className="p-2 rounded-full bg-blue-500/20 text-blue-500"><Settings size={18} /></div>
-                        Account
+                        <div className="p-2 rounded-full bg-blue-500/20 text-blue-500"><User size={18} /></div>
+                        Profile Settings
                       </h3>
-                      <div className="flex flex-col gap-1">
-                        <button className={`w-full text-left p-3 rounded-xl hover:bg-white/5 transition-colors ${textSecondary} hover:${textPrimary}`}>
-                          Change Password
-                        </button>
-                        <button className={`w-full text-left p-3 rounded-xl hover:bg-white/5 transition-colors ${textSecondary} hover:${textPrimary}`}>
-                          Two-Factor Authentication
-                        </button>
-                        <button className={`w-full text-left p-3 rounded-xl hover:bg-white/5 transition-colors ${textSecondary} hover:${textPrimary}`}>
-                          Manage Sessions
-                        </button>
+                      <div className="flex flex-col gap-4">
+                        <div className="flex flex-col gap-1">
+                          <label className={`text-sm font-medium ${textSecondary} ml-1`}>Display Name</label>
+                          <input
+                            type="text"
+                            value={displayName}
+                            onChange={(e) => setDisplayName(e.target.value)}
+                            className={`w-full p-3 rounded-xl bg-white/5 border border-white/10 outline-none focus:border-white/20 transition-colors ${textPrimary}`}
+                            placeholder="Your Name"
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className={`text-sm font-medium ${textSecondary} ml-1`}>Sender Email</label>
+                          <input
+                            type="text"
+                            value={senderEmail}
+                            onChange={(e) => setSenderEmail(e.target.value)}
+                            className={`w-full p-3 rounded-xl bg-white/5 border border-white/10 outline-none focus:border-white/20 transition-colors ${textPrimary}`}
+                            placeholder="test@yourdomain.com"
+                          />
+                        </div>
                       </div>
                     </div>
 
@@ -801,8 +1006,13 @@ const Index = () => {
                       JD
                     </div>
                     <div className="text-center">
-                      <h2 className={`text-3xl font-bold ${textPrimary}`}>John Doe</h2>
-                      <p className={`${textSecondary}`}>admin@example.com</p>
+                      <h2 className={`text-3xl font-bold ${textPrimary}`}>{displayName}</h2>
+                      <p className={`${textSecondary}`}>{user?.email}</p>
+                      {userRole === 'admin' && (
+                        <span className="inline-block mt-2 px-3 py-1 bg-indigo-500/20 text-indigo-400 rounded-full text-sm font-medium border border-indigo-500/20">
+                          Admin Access
+                        </span>
+                      )}
                     </div>
                   </div>
 
